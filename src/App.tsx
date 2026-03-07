@@ -125,7 +125,7 @@ export default function App() {
 
     try {
       if (!ai) {
-        throw new Error("Gemini API key is not configured. Please add your API key to the environment variables.");
+        throw new Error("Gemini API key is not configured. The AI tutor will only work if an API key is provided.");
       }
 
       // Build context from active note if available
@@ -150,9 +150,13 @@ export default function App() {
         content: response.text || "I'm sorry, I couldn't generate a response." 
       };
       setMessages(prev => [...prev, modelMsg]);
-    } catch (error) {
+    } catch (error: any) {
       console.error("AI Error:", error);
-      setMessages(prev => [...prev, { id: uuidv4(), role: 'model', content: "Sorry, I encountered an error while processing your request." }]);
+      setMessages(prev => [...prev, { 
+        id: uuidv4(), 
+        role: 'model', 
+        content: error.message || "Sorry, I encountered an error while processing your request." 
+      }]);
     } finally {
       setIsTyping(false);
     }
