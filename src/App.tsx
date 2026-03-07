@@ -196,9 +196,9 @@ export default function App() {
       <div className="flex-1 flex overflow-hidden">
         {/* Sidebar - Notes List */}
         <div className={`${mobileView === 'notes' ? 'flex' : 'hidden'} lg:flex w-full lg:w-64 bg-white border-r border-slate-200 flex-col shrink-0`}>
-          <div className="p-4 border-b border-slate-200 flex items-center gap-2 text-indigo-600">
-            <GraduationCap className="w-8 h-8" />
-            <h1 className="font-bold text-xl tracking-tight">Eduhimnet</h1>
+          <div className="p-4 border-b border-slate-200 flex items-center gap-2">
+            <img src="./icon.svg" alt="Eduhimnet Logo" className="w-8 h-8 rounded-lg shadow-sm" />
+            <h1 className="font-bold text-xl tracking-tight text-indigo-600">Eduhimnet</h1>
           </div>
         
         <div className="p-4">
