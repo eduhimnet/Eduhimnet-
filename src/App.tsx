@@ -21,7 +21,14 @@ import { GoogleGenAI } from '@google/genai';
 import Markdown from 'react-markdown';
 import { format } from 'date-fns';
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+let ai: GoogleGenAI | null = null;
+try {
+  if (process.env.GEMINI_API_KEY) {
+    ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  }
+} catch (error) {
+  console.error("Failed to initialize Gemini API:", error);
+}
 
 interface Note {
   id: string;
@@ -117,6 +124,10 @@ export default function App() {
     setIsTyping(true);
 
     try {
+      if (!ai) {
+        throw new Error("Gemini API key is not configured. Please add your API key to the environment variables.");
+      }
+
       // Build context from active note if available
       let context = '';
       if (activeNote && activeNote.content.trim()) {
