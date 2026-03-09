@@ -15,21 +15,26 @@ import {
   GraduationCap,
   MessageSquare,
   AlignLeft,
-  HelpCircle
+  HelpCircle,
+  Layout,
+  FileEdit,
+  Globe,
+  User
 } from 'lucide-react';
 import { GoogleGenAI } from '@google/genai';
 import Markdown from 'react-markdown';
 import { format } from 'date-fns';
 
-let ai: GoogleGenAI | null = null;
-try {
-  if (process.env.GEMINI_API_KEY) {
-    ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+declare global {
+  interface Window {
+    aistudio?: {
+      hasSelectedApiKey: () => Promise<boolean>;
+      openSelectKey: () => Promise<void>;
+    };
   }
-} catch (error) {
-  console.error("Failed to initialize Gemini API:", error);
 }
 
+// AI initialization is now handled lazily inside handleSendMessage
 interface Note {
   id: string;
   title: string;
@@ -41,6 +46,14 @@ interface Message {
   id: string;
   role: 'user' | 'model';
   content: string;
+}
+
+interface Article {
+  id: string;
+  title: string;
+  content: string;
+  author: string;
+  createdAt: number;
 }
 
 export default function App() {
@@ -70,7 +83,23 @@ export default function App() {
   const [inputMessage, setInputMessage] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [mobileView, setMobileView] = useState<'notes' | 'editor' | 'ai' | 'quiz'>('editor');
+  const [needsApiKey, setNeedsApiKey] = useState(false);
+  
+  // Articles State
+  const [articles, setArticles] = useState<Article[]>(() => {
+    const saved = localStorage.getItem('eduhimnet-articles');
+    return saved ? JSON.parse(saved) : [];
+  });
+  const [sharedTab, setSharedTab] = useState<'ai' | 'write' | 'posts'>('ai');
+  const [newArticle, setNewArticle] = useState({ title: '', content: '', author: '' });
+
+  // Detect if we are on the Shared App URL (Preview)
+  const isSharedView = typeof window !== 'undefined' && (
+    window.location.hostname.includes('-pre-') || 
+    window.location.hostname.includes('ais-pre')
+  );
+
+  const [mobileView, setMobileView] = useState<'notes' | 'editor' | 'ai' | 'quiz'>(isSharedView ? 'ai' : 'editor');
   
   // Quiz State
   const [quizStarted, setQuizStarted] = useState(false);
@@ -92,7 +121,11 @@ export default function App() {
     { q: "क्षेत्रफल की दृष्टि से विश्व का सबसे बड़ा देश कौन सा है?", a: ["चीन", "रूस", "कनाडा", "अमेरिका"], c: 1 },
     { q: "'जय जवान जय किसान' का नारा किसने दिया था?", a: ["महात्मा गांधी", "लाल बहादुर शास्त्री", "जवाहरलाल नेहरू", "अटल बिहारी वाजपेयी"], c: 1 },
     { q: "सूर्य के सबसे निकट का ग्रह कौन सा है?", a: ["शुक्र", "मंगल", "बुध", "पृथ्वी"], c: 2 },
-    { q: "भारत ने अपना पहला क्रिकेट विश्व कप कब जीता था?", a: ["1983", "2011", "2007", "1999"], c: 0 }
+    { q: "भारत ने अपना पहला क्रिकेट विश्व कप कब जीता था?", a: ["1983", "2011", "2007", "1999"], c: 0 },
+    { q: "ताजमहल भारत के किस शहर में स्थित है?", a: ["आगरा", "दिल्ली", "जयपुर", "लखनऊ"], c: 0 },
+    { q: "विटामिन C का सबसे अच्छा स्रोत क्या है?", a: ["सेब", "आम", "आंवला", "केला"], c: 2 },
+    { q: "भारत की सबसे लंबी नदी कौन सी है?", a: ["यमुना", "गंगा", "ब्रह्मपुत्र", "गोदावरी"], c: 1 },
+    { q: "रेडियम की खोज किसने की थी?", a: ["आइजैक न्यूटन", "अल्बर्ट आइंस्टीन", "मैरी क्यूरी", "थॉमस एडिसन"], c: 2 }
   ];
 
   const handleQuizAnswer = (index: number) => {
@@ -175,19 +208,36 @@ export default function App() {
     setIsTyping(true);
 
     try {
-      if (!ai) {
-        throw new Error("Gemini API key is not configured. The AI tutor will only work if an API key is provided.");
+      // Check if user has selected an API key if we are in a state that needs it
+      if (typeof window !== 'undefined' && window.aistudio?.hasSelectedApiKey) {
+        const hasKey = await window.aistudio.hasSelectedApiKey();
+        if (!hasKey && isSharedView) {
+          setNeedsApiKey(true);
+          throw new Error("Please select an API key using the button below to continue.");
+        }
       }
+
+      // Lazy initialization of AI
+      // In this environment, the selected key is often in process.env.API_KEY
+      const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
+      
+      // Check if key is valid string and not placeholder
+      if (!apiKey || apiKey === 'undefined' || apiKey === 'null' || apiKey.length < 5) {
+        setNeedsApiKey(true);
+        throw new Error("API Key is missing. Please click the 'Select API Key' button below.");
+      }
+      
+      const aiInstance = new GoogleGenAI({ apiKey });
 
       // Build context from active note if available
       let context = '';
-      if (activeNote && activeNote.content.trim()) {
+      if (!isSharedView && activeNote && activeNote.content.trim()) {
         context = `\n\nContext from current note "${activeNote.title}":\n${activeNote.content.substring(0, 2000)}`;
       }
 
       const prompt = `${text}${context}`;
       
-      const response = await ai.models.generateContent({
+      const response = await aiInstance.models.generateContent({
         model: 'gemini-3-flash-preview',
         contents: prompt,
         config: {
@@ -201,15 +251,39 @@ export default function App() {
         content: response.text || "I'm sorry, I couldn't generate a response." 
       };
       setMessages(prev => [...prev, modelMsg]);
+      setNeedsApiKey(false);
     } catch (error: any) {
       console.error("AI Error:", error);
+      
+      // Check for invalid key error from Google
+      if (error.message?.includes('400') || error.message?.includes('API key not valid')) {
+        setNeedsApiKey(true);
+      }
+
       setMessages(prev => [...prev, { 
         id: uuidv4(), 
         role: 'model', 
-        content: error.message || "Sorry, I encountered an error while processing your request." 
+        content: error.message?.includes('400') 
+          ? "API Key invalid (400). Please use the button below to select a valid API key." 
+          : (error.message || "Sorry, I encountered an error while processing your request.")
       }]);
     } finally {
       setIsTyping(false);
+    }
+  };
+
+  const handleSelectKey = async () => {
+    if (window.aistudio?.openSelectKey) {
+      await window.aistudio.openSelectKey();
+      // After selection, we assume success and clear the error state
+      setNeedsApiKey(false);
+      setMessages(prev => [...prev, { 
+        id: uuidv4(), 
+        role: 'model', 
+        content: "API Key selected. You can now try sending your message again!" 
+      }]);
+    } else {
+      alert("API Key selection is not available in this environment.");
     }
   };
 
@@ -242,116 +316,277 @@ export default function App() {
     handleSendMessage(prompt);
   };
 
+  const publishArticle = () => {
+    if (!newArticle.title.trim() || !newArticle.content.trim()) {
+      alert("Please fill in both title and content.");
+      return;
+    }
+    const article: Article = {
+      id: uuidv4(),
+      title: newArticle.title,
+      content: newArticle.content,
+      author: newArticle.author || 'Anonymous',
+      createdAt: Date.now(),
+    };
+    const updatedArticles = [article, ...articles];
+    setArticles(updatedArticles);
+    localStorage.setItem('eduhimnet-articles', JSON.stringify(updatedArticles));
+    setNewArticle({ title: '', content: '', author: '' });
+    setSharedTab('posts');
+  };
+
+  const deleteArticle = (id: string) => {
+    const updatedArticles = articles.filter(a => a.id !== id);
+    setArticles(updatedArticles);
+    localStorage.setItem('eduhimnet-articles', JSON.stringify(updatedArticles));
+  };
+
   return (
     <div className="flex flex-col lg:flex-row h-screen bg-slate-50 text-slate-900 font-sans overflow-hidden">
       <div className="flex-1 flex overflow-hidden">
-        {/* Sidebar - Notes List */}
-        <div className={`${mobileView === 'notes' ? 'flex' : 'hidden'} lg:flex w-full lg:w-64 bg-white border-r border-slate-200 flex-col shrink-0`}>
-          <div className="p-4 border-b border-slate-200 flex items-center gap-2">
-            <img src="./icon.svg" alt="Eduhimnet Logo" className="w-8 h-8 rounded-lg shadow-sm" />
-            <h1 className="font-bold text-xl tracking-tight text-indigo-600">Eduhimnet</h1>
-          </div>
-        
-        <div className="p-4">
-          <button 
-            onClick={createNote}
-            className="w-full flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white py-2 px-4 rounded-lg transition-colors font-medium text-sm"
-          >
-            <Plus className="w-4 h-4" />
-            New Note
-          </button>
-        </div>
-
-        <div className="flex-1 overflow-y-auto p-2 space-y-1">
-          <button 
-            onClick={() => setMobileView('quiz')}
-            className={`w-full flex items-center gap-3 p-3 rounded-lg transition-colors mb-4 ${
-              mobileView === 'quiz' ? 'bg-indigo-600 text-white' : 'bg-orange-50 text-orange-700 hover:bg-orange-100'
-            }`}
-          >
-            <HelpCircle className="w-5 h-5" />
-            <span className="font-bold">Offline Quiz</span>
-          </button>
-          
-          <div className="px-2 py-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider">My Notes</div>
-          {notes.map(note => (
-            <div 
-              key={note.id}
-              onClick={() => setActiveNoteId(note.id)}
-              className={`group flex items-center justify-between p-3 rounded-lg cursor-pointer transition-colors ${
-                activeNoteId === note.id ? 'bg-indigo-50 text-indigo-900' : 'hover:bg-slate-100 text-slate-700'
-              }`}
-            >
-              <div className="flex-1 min-w-0">
-                <h3 className="font-medium text-sm truncate">{note.title || 'Untitled Note'}</h3>
-                <p className="text-xs text-slate-500 mt-0.5">{format(note.updatedAt, 'MMM d, yyyy')}</p>
+        {!isSharedView && (
+          <>
+            {/* Sidebar - Notes List */}
+            <div className={`${mobileView === 'notes' ? 'flex' : 'hidden'} lg:flex w-full lg:w-64 bg-white border-r border-slate-200 flex-col shrink-0`}>
+              <div className="p-4 border-b border-slate-200 flex items-center gap-2">
+                <img src="./icon.svg" alt="Eduhimnet Logo" className="w-8 h-8 rounded-lg shadow-sm" />
+                <h1 className="font-bold text-xl tracking-tight text-indigo-600">Eduhimnet</h1>
               </div>
+            
+            <div className="p-4">
               <button 
-                onClick={(e) => { e.stopPropagation(); deleteNote(note.id); }}
-                className="opacity-0 group-hover:opacity-100 p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-md transition-all"
-                title="Delete note"
+                onClick={createNote}
+                className="w-full flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white py-2 px-4 rounded-lg transition-colors font-medium text-sm"
               >
-                <Trash2 className="w-4 h-4" />
+                <Plus className="w-4 h-4" />
+                New Note
               </button>
             </div>
-          ))}
-          {notes.length === 0 && (
-            <div className="text-center p-4 text-slate-500 text-sm">
-              No notes yet. Create one to start studying!
-            </div>
-          )}
-        </div>
-      </div>
 
-      {/* Main Content - Editor */}
-      <div className={`${mobileView === 'editor' ? 'flex' : 'hidden'} lg:flex flex-1 flex-col min-w-0 bg-white shadow-[0_0_40px_rgba(0,0,0,0.02)] z-10`}>
-        {activeNote ? (
-          <>
-            <div className="h-16 border-b border-slate-200 flex items-center justify-between px-6 bg-white">
-              <div className="flex items-center gap-2 text-slate-500">
-                <FileText className="w-5 h-5" />
-                <span className="text-sm font-medium">Editor</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <button 
-                  onClick={handleCopy}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors"
+            <div className="flex-1 overflow-y-auto p-2 space-y-1">
+              <button 
+                onClick={() => setMobileView('quiz')}
+                className={`w-full flex items-center gap-3 p-3 rounded-lg transition-colors mb-4 ${
+                  mobileView === 'quiz' ? 'bg-indigo-600 text-white' : 'bg-orange-50 text-orange-700 hover:bg-orange-100'
+                }`}
+              >
+                <HelpCircle className="w-5 h-5" />
+                <span className="font-bold">Offline Quiz</span>
+              </button>
+              
+              <div className="px-2 py-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider">My Notes</div>
+              {notes.map(note => (
+                <div 
+                  key={note.id}
+                  onClick={() => setActiveNoteId(note.id)}
+                  className={`group flex items-center justify-between p-3 rounded-lg cursor-pointer transition-colors ${
+                    activeNoteId === note.id ? 'bg-indigo-50 text-indigo-900' : 'hover:bg-slate-100 text-slate-700'
+                  }`}
                 >
-                  {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-                  {copied ? 'Copied!' : 'Copy'}
-                </button>
-              </div>
+                  <div className="flex-1 min-w-0">
+                    <h3 className="font-medium text-sm truncate">{note.title || 'Untitled Note'}</h3>
+                    <p className="text-xs text-slate-500 mt-0.5">{format(note.updatedAt, 'MMM d, yyyy')}</p>
+                  </div>
+                  <button 
+                    onClick={(e) => { e.stopPropagation(); deleteNote(note.id); }}
+                    className="opacity-0 group-hover:opacity-100 p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-md transition-all"
+                    title="Delete note"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              ))}
+              {notes.length === 0 && (
+                <div className="text-center p-4 text-slate-500 text-sm">
+                  No notes yet. Create one to start studying!
+                </div>
+              )}
             </div>
-            
-            <div className="flex-1 overflow-y-auto p-8 lg:p-12 flex flex-col">
-              <div className="max-w-3xl mx-auto w-full flex-1 flex flex-col">
-                <input
-                  type="text"
-                  value={activeNote.title}
-                  onChange={(e) => updateNote(activeNote.id, { title: e.target.value })}
-                  placeholder="Note Title"
-                  className="block w-full text-4xl font-bold text-slate-900 placeholder-slate-300 border-none focus:outline-none focus:ring-0 bg-transparent mb-6 shrink-0"
-                />
-                <textarea
-                  value={activeNote.content}
-                  onChange={(e) => updateNote(activeNote.id, { content: e.target.value })}
-                  placeholder="Start writing your notes here... The AI can help you summarize, explain, or improve your writing."
-                  className="block w-full flex-1 text-lg text-slate-700 placeholder-slate-400 border-none focus:outline-none focus:ring-0 bg-transparent resize-none leading-relaxed"
-                />
+          </div>
+
+          {/* Main Content - Editor */}
+          <div className={`${mobileView === 'editor' ? 'flex' : 'hidden'} lg:flex flex-1 flex-col min-w-0 bg-white shadow-[0_0_40px_rgba(0,0,0,0.02)] z-10`}>
+            {activeNote ? (
+              <>
+                <div className="h-16 border-b border-slate-200 flex items-center justify-between px-6 bg-white">
+                  <div className="flex items-center gap-2 text-slate-500">
+                    <FileText className="w-5 h-5" />
+                    <span className="text-sm font-medium">Editor</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button 
+                      onClick={handleCopy}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors"
+                    >
+                      {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                      {copied ? 'Copied!' : 'Copy'}
+                    </button>
+                  </div>
+                </div>
+                
+                <div className="flex-1 overflow-y-auto p-8 lg:p-12 flex flex-col">
+                  <div className="max-w-3xl mx-auto w-full flex-1 flex flex-col">
+                    <input
+                      type="text"
+                      value={activeNote.title}
+                      onChange={(e) => updateNote(activeNote.id, { title: e.target.value })}
+                      placeholder="Note Title"
+                      className="block w-full text-4xl font-bold text-slate-900 placeholder-slate-300 border-none focus:outline-none focus:ring-0 bg-transparent mb-6 shrink-0"
+                    />
+                    <textarea
+                      value={activeNote.content}
+                      onChange={(e) => updateNote(activeNote.id, { content: e.target.value })}
+                      placeholder="Start writing your notes here... The AI can help you summarize, explain, or improve your writing."
+                      className="block w-full flex-1 text-lg text-slate-700 placeholder-slate-400 border-none focus:outline-none focus:ring-0 bg-transparent resize-none leading-relaxed"
+                    />
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="flex-1 flex flex-col items-center justify-center text-slate-400">
+                <BookOpen className="w-16 h-16 mb-4 text-slate-300" />
+                <p className="text-lg font-medium text-slate-500">Select or create a note to start</p>
               </div>
-            </div>
-          </>
-        ) : (
-          <div className="flex-1 flex flex-col items-center justify-center text-slate-400">
-            <BookOpen className="w-16 h-16 mb-4 text-slate-300" />
-            <p className="text-lg font-medium text-slate-500">Select or create a note to start</p>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* Right Sidebar - AI Assistant / Quiz / Articles */}
+      <div className={`${(mobileView === 'ai' || mobileView === 'quiz' || isSharedView) ? 'flex' : 'hidden'} lg:flex w-full ${isSharedView ? 'lg:w-full' : 'lg:w-96'} bg-slate-50 border-l border-slate-200 flex-col shrink-0`}>
+        {isSharedView && (
+          <div className="bg-white border-b border-slate-200 flex items-center justify-center p-2 gap-1 shrink-0">
+            <button 
+              onClick={() => setSharedTab('ai')}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${sharedTab === 'ai' ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+            >
+              <Bot className="w-4 h-4" />
+              AI Tutor
+            </button>
+            <button 
+              onClick={() => setSharedTab('write')}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${sharedTab === 'write' ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+            >
+              <FileEdit className="w-4 h-4" />
+              Write Article
+            </button>
+            <button 
+              onClick={() => setSharedTab('posts')}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${sharedTab === 'posts' ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+            >
+              <Globe className="w-4 h-4" />
+              Published Posts
+            </button>
           </div>
         )}
-      </div>
 
-      {/* Right Sidebar - AI Assistant / Quiz */}
-      <div className={`${(mobileView === 'ai' || mobileView === 'quiz') ? 'flex' : 'hidden'} lg:flex w-full lg:w-96 bg-slate-50 border-l border-slate-200 flex-col shrink-0`}>
-        {mobileView === 'quiz' ? (
+        {sharedTab === 'write' && isSharedView ? (
+          <div className="flex-1 flex flex-col bg-white overflow-hidden">
+            <div className="p-6 border-b border-slate-200">
+              <h2 className="text-2xl font-bold text-slate-800">Write New Article</h2>
+              <p className="text-sm text-slate-500 mt-1">Share your knowledge with the community.</p>
+            </div>
+            <div className="flex-1 overflow-y-auto p-6 space-y-6">
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Article Title</label>
+                <input 
+                  type="text" 
+                  value={newArticle.title}
+                  onChange={(e) => setNewArticle({...newArticle, title: e.target.value})}
+                  placeholder="Enter a catchy title..."
+                  className="w-full p-4 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all text-lg font-bold"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Author Name</label>
+                <div className="relative">
+                  <User className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                  <input 
+                    type="text" 
+                    value={newArticle.author}
+                    onChange={(e) => setNewArticle({...newArticle, author: e.target.value})}
+                    placeholder="Your name (optional)"
+                    className="w-full pl-11 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all"
+                  />
+                </div>
+              </div>
+              <div className="space-y-2 flex-1 flex flex-col">
+                <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Content</label>
+                <textarea 
+                  value={newArticle.content}
+                  onChange={(e) => setNewArticle({...newArticle, content: e.target.value})}
+                  placeholder="Write your article here... You can use markdown."
+                  className="w-full flex-1 p-4 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all resize-none leading-relaxed"
+                />
+              </div>
+              <button 
+                onClick={publishArticle}
+                className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-4 rounded-xl shadow-lg transition-all transform hover:scale-[1.02] active:scale-[0.98] flex items-center justify-center gap-2"
+              >
+                <Globe className="w-5 h-5" />
+                Publish Article
+              </button>
+            </div>
+          </div>
+        ) : sharedTab === 'posts' && isSharedView ? (
+          <div className="flex-1 flex flex-col bg-slate-50 overflow-hidden">
+            <div className="p-6 bg-white border-b border-slate-200">
+              <h2 className="text-2xl font-bold text-slate-800">Published Posts</h2>
+              <p className="text-sm text-slate-500 mt-1">Explore articles shared by others.</p>
+            </div>
+            <div className="flex-1 overflow-y-auto p-6 space-y-6">
+              {articles.length === 0 ? (
+                <div className="flex flex-col items-center justify-center h-full text-slate-400 space-y-4">
+                  <Globe className="w-16 h-16 opacity-20" />
+                  <p className="text-lg font-medium">No posts yet.</p>
+                  <button 
+                    onClick={() => setSharedTab('write')}
+                    className="text-indigo-600 font-bold hover:underline"
+                  >
+                    Be the first to write one!
+                  </button>
+                </div>
+              ) : (
+                articles.map(article => (
+                  <div key={article.id} className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow group">
+                    <div className="flex justify-between items-start mb-4">
+                      <h3 className="text-xl font-bold text-slate-800 leading-tight">{article.title}</h3>
+                      <button 
+                        onClick={() => deleteArticle(article.id)}
+                        className="p-2 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all opacity-0 group-hover:opacity-100"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                    <div className="prose prose-sm prose-slate max-w-none mb-6 line-clamp-3">
+                      <Markdown>{article.content}</Markdown>
+                    </div>
+                    <div className="flex items-center justify-between pt-4 border-t border-slate-100">
+                      <div className="flex items-center gap-2">
+                        <div className="w-8 h-8 bg-indigo-100 rounded-full flex items-center justify-center text-indigo-600 font-bold text-xs">
+                          {article.author.charAt(0).toUpperCase()}
+                        </div>
+                        <div>
+                          <p className="text-xs font-bold text-slate-700">{article.author}</p>
+                          <p className="text-[10px] text-slate-400">{format(article.createdAt, 'MMM d, yyyy')}</p>
+                        </div>
+                      </div>
+                      <button 
+                        onClick={() => {
+                          // In a real app, this would open a full view
+                          alert("Article full view coming soon!");
+                        }}
+                        className="text-xs font-bold text-indigo-600 hover:text-indigo-700"
+                      >
+                        Read More
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        ) : mobileView === 'quiz' && !isSharedView ? (
           <div className="flex flex-col h-full bg-white">
             <div className="p-4 border-b border-slate-200 bg-white flex items-center justify-between shrink-0">
               <div className="flex items-center gap-2">
@@ -444,41 +679,43 @@ export default function App() {
         ) : (
           <>
             <div className="p-4 border-b border-slate-200 bg-white">
-              <div className="flex items-center gap-2 text-indigo-600 mb-4">
+              <div className="flex items-center gap-2 text-indigo-600 mb-2">
                 <Bot className="w-6 h-6" />
                 <h2 className="font-semibold text-lg">AI Tutor</h2>
               </div>
               
-              <div className="grid grid-cols-2 gap-2">
-                <button 
-                  onClick={() => handleQuickAction('summarize')}
-                  className="flex items-center gap-2 p-2 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-indigo-50 hover:text-indigo-700 rounded-md transition-colors border border-slate-200 hover:border-indigo-200"
-                >
-                  <AlignLeft className="w-3.5 h-3.5" />
-                  Summarize
-                </button>
-                <button 
-                  onClick={() => handleQuickAction('explain')}
-                  className="flex items-center gap-2 p-2 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-indigo-50 hover:text-indigo-700 rounded-md transition-colors border border-slate-200 hover:border-indigo-200"
-                >
-                  <HelpCircle className="w-3.5 h-3.5" />
-                  Explain
-                </button>
-                <button 
-                  onClick={() => setMobileView('quiz')}
-                  className="flex items-center gap-2 p-2 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-indigo-50 hover:text-indigo-700 rounded-md transition-colors border border-slate-200 hover:border-indigo-200"
-                >
-                  <Sparkles className="w-3.5 h-3.5" />
-                  Offline Quiz
-                </button>
-                <button 
-                  onClick={() => handleQuickAction('improve')}
-                  className="flex items-center gap-2 p-2 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-indigo-50 hover:text-indigo-700 rounded-md transition-colors border border-slate-200 hover:border-indigo-200"
-                >
-                  <Sparkles className="w-3.5 h-3.5" />
-                  Improve
-                </button>
-              </div>
+              {!isSharedView && (
+                <div className="grid grid-cols-2 gap-2 mt-4">
+                  <button 
+                    onClick={() => handleQuickAction('summarize')}
+                    className="flex items-center gap-2 p-2 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-indigo-50 hover:text-indigo-700 rounded-md transition-colors border border-slate-200 hover:border-indigo-200"
+                  >
+                    <AlignLeft className="w-3.5 h-3.5" />
+                    Summarize
+                  </button>
+                  <button 
+                    onClick={() => handleQuickAction('explain')}
+                    className="flex items-center gap-2 p-2 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-indigo-50 hover:text-indigo-700 rounded-md transition-colors border border-slate-200 hover:border-indigo-200"
+                  >
+                    <HelpCircle className="w-3.5 h-3.5" />
+                    Explain
+                  </button>
+                  <button 
+                    onClick={() => setMobileView('quiz')}
+                    className="flex items-center gap-2 p-2 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-indigo-50 hover:text-indigo-700 rounded-md transition-colors border border-slate-200 hover:border-indigo-200"
+                  >
+                    <Sparkles className="w-3.5 h-3.5" />
+                    Offline Quiz
+                  </button>
+                  <button 
+                    onClick={() => handleQuickAction('improve')}
+                    className="flex items-center gap-2 p-2 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-indigo-50 hover:text-indigo-700 rounded-md transition-colors border border-slate-200 hover:border-indigo-200"
+                  >
+                    <Sparkles className="w-3.5 h-3.5" />
+                    Improve
+                  </button>
+                </div>
+              )}
             </div>
 
             <div className="flex-1 overflow-y-auto p-4 space-y-4">
@@ -522,6 +759,19 @@ export default function App() {
             </div>
 
             <div className="p-4 bg-white border-t border-slate-200">
+              {needsApiKey && (
+                <div className="mb-4 p-3 bg-orange-50 border border-orange-200 rounded-xl flex flex-col items-center gap-2">
+                  <p className="text-xs text-orange-700 text-center font-medium">
+                    API Key invalid or missing. Please select a valid key to continue.
+                  </p>
+                  <button 
+                    onClick={handleSelectKey}
+                    className="bg-orange-500 hover:bg-orange-600 text-white text-xs font-bold py-2 px-4 rounded-lg transition-all shadow-sm"
+                  >
+                    Select API Key
+                  </button>
+                </div>
+              )}
               <form 
                 onSubmit={(e) => { e.preventDefault(); handleSendMessage(); }}
                 className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-full px-4 py-2 focus-within:border-indigo-500 focus-within:ring-1 focus-within:ring-indigo-500 transition-all"
@@ -549,36 +799,38 @@ export default function App() {
       </div>
 
       {/* Mobile Navigation */}
-      <div className="lg:hidden bg-white border-t border-slate-200 flex justify-around p-2 shrink-0 z-50">
-        <button 
-          onClick={() => setMobileView('notes')} 
-          className={`flex flex-col items-center p-2 w-16 rounded-lg transition-colors ${mobileView === 'notes' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-500 hover:bg-slate-50'}`}
-        >
-          <BookOpen className="w-5 h-5" />
-          <span className="text-[10px] mt-1 font-medium">Notes</span>
-        </button>
-        <button 
-          onClick={() => setMobileView('editor')} 
-          className={`flex flex-col items-center p-2 w-16 rounded-lg transition-colors ${mobileView === 'editor' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-500 hover:bg-slate-50'}`}
-        >
-          <FileText className="w-5 h-5" />
-          <span className="text-[10px] mt-1 font-medium">Editor</span>
-        </button>
-        <button 
-          onClick={() => setMobileView('ai')} 
-          className={`flex flex-col items-center p-2 w-16 rounded-lg transition-colors ${mobileView === 'ai' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-500 hover:bg-slate-50'}`}
-        >
-          <Bot className="w-5 h-5" />
-          <span className="text-[10px] mt-1 font-medium">AI Tutor</span>
-        </button>
-        <button 
-          onClick={() => setMobileView('quiz')} 
-          className={`flex flex-col items-center p-2 w-16 rounded-lg transition-colors ${mobileView === 'quiz' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-500 hover:bg-slate-50'}`}
-        >
-          <HelpCircle className="w-5 h-5" />
-          <span className="text-[10px] mt-1 font-medium">Quiz</span>
-        </button>
-      </div>
+      {!isSharedView && (
+        <div className="lg:hidden bg-white border-t border-slate-200 flex justify-around p-2 shrink-0 z-50">
+          <button 
+            onClick={() => setMobileView('notes')} 
+            className={`flex flex-col items-center p-2 w-16 rounded-lg transition-colors ${mobileView === 'notes' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-500 hover:bg-slate-50'}`}
+          >
+            <BookOpen className="w-5 h-5" />
+            <span className="text-[10px] mt-1 font-medium">Notes</span>
+          </button>
+          <button 
+            onClick={() => setMobileView('editor')} 
+            className={`flex flex-col items-center p-2 w-16 rounded-lg transition-colors ${mobileView === 'editor' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-500 hover:bg-slate-50'}`}
+          >
+            <FileText className="w-5 h-5" />
+            <span className="text-[10px] mt-1 font-medium">Editor</span>
+          </button>
+          <button 
+            onClick={() => setMobileView('ai')} 
+            className={`flex flex-col items-center p-2 w-16 rounded-lg transition-colors ${mobileView === 'ai' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-500 hover:bg-slate-50'}`}
+          >
+            <Bot className="w-5 h-5" />
+            <span className="text-[10px] mt-1 font-medium">AI Tutor</span>
+          </button>
+          <button 
+            onClick={() => setMobileView('quiz')} 
+            className={`flex flex-col items-center p-2 w-16 rounded-lg transition-colors ${mobileView === 'quiz' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-500 hover:bg-slate-50'}`}
+          >
+            <HelpCircle className="w-5 h-5" />
+            <span className="text-[10px] mt-1 font-medium">Quiz</span>
+          </button>
+        </div>
+      )}
     </div>
   );
 }
