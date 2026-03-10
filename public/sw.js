@@ -1,9 +1,9 @@
-const CACHE_NAME = 'eduhimnet-cache-v2';
+const CACHE_NAME = 'eduhimnet-cache-v3';
 const ASSETS = [
-  '/',
-  '/index.html',
-  '/manifest.json',
-  '/icon.svg'
+  './',
+  './index.html',
+  './manifest.json',
+  './icon.svg'
 ];
 
 self.addEventListener('install', (event) => {
@@ -35,7 +35,7 @@ self.addEventListener('fetch', (event) => {
   if (event.request.mode === 'navigate') {
     event.respondWith(
       fetch(event.request).catch(() => {
-        return caches.match('/index.html');
+        return caches.match('./index.html');
       })
     );
     return;
